@@ -30,8 +30,10 @@ button, select { font: inherit; color: inherit; }
 .subj { text-align: left; cursor: pointer; width: 100%; }
 .subj:hover { border-color: #445; }
 .subj h3 { margin: 0 0 4px; font-size: 16px; }
-.bar { height: 6px; background: #2a3144; border-radius: 99px; overflow: hidden; margin-top: 10px; }
-.bar > i { display: block; height: 100%; background: var(--ok); }
+.bar { display: flex; height: 6px; background: #2a3144; border-radius: 99px; overflow: hidden; margin-top: 10px; }
+.bar > i { display: block; height: 100%; }
+.bar > i.ok { background: var(--ok); }
+.bar > i.bad { background: var(--bad); }
 .row { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
 .tabs {
   position: fixed; left: 0; right: 0; bottom: 0;

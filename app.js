@@ -149,15 +149,23 @@ function statsFor(subject) {
     correct += s.ok;
     if (s.last === "bad") failed += 1;
   });
+  const passed = seenCount - failed;
+  const share = (n) => (qs.length ? (n / qs.length) * 100 : 0);
   return {
     total: qs.length,
     attempts,
     correct,
     failed,
     seenCount,
+    passed,
     acc: attempts ? Math.round((correct / attempts) * 100) : 0,
-    cover: qs.length ? Math.round((seenCount / qs.length) * 100) : 0,
+    okPct: share(passed),
+    badPct: share(failed),
   };
+}
+
+function barHtml(st) {
+  return `<div class="bar"><i class="ok" style="width:${st.okPct}%"></i><i class="bad" style="width:${st.badPct}%"></i></div>`;
 }
 
 function renderTop() {
@@ -187,7 +195,7 @@ function renderHome() {
         <div><b>Все сразу</b><div class="muted">${all.seenCount} из ${all.total} пройдено · верных ${all.acc}%</div></div>
         <button class="go" id="all">Тест</button>
       </div>
-      <div class="bar"><i style="width:${all.cover}%"></i></div>
+      ${barHtml(all)}
     </div>
     <div class="grid">
       ${bank.subjects.map((s) => {
@@ -195,7 +203,7 @@ function renderHome() {
         return `<button class="card subj" data-s="${s.id}">
           <h3>${s.id} · ${s.name}</h3>
           <div class="muted">${st.seenCount} из ${st.total} · верных ${st.acc}% · ошибок ${st.failed}</div>
-          <div class="bar"><i style="width:${st.cover}%"></i></div>
+          ${barHtml(st)}
         </button>`;
       }).join("")}
     </div>`;
