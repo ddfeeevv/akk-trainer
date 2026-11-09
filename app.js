@@ -286,7 +286,7 @@ function renderCard() {
   const q = current();
   if (!q) return renderDone();
   const name = quiz.subject ? bank.subjects.find((s) => s.id === quiz.subject).name : "Все предметы";
-  const kind = { text: "Открытый", choice: "Ответ", mcq: "Тест", match: "Соответствие", order: "Порядок" }[q.type];
+  const kind = { text: "Открытый", choice: "Открытый", mcq: "Тест", match: "Соответствие", order: "Порядок" }[q.type];
   quiz.card = { q, locked: false, built: buildCard(q) };
   app.innerHTML = `
     <div class="row">
@@ -303,15 +303,7 @@ function buildCard(q) {
     const letters = ["а", "б", "в", "г", "д", "е"];
     return { options: q.options.map((text, i) => ({ text, letter: letters[i] || String(i + 1) })) };
   }
-  if (q.type === "choice") {
-    const pool = bank.questions
-      .filter((x) => (x.type === "choice" || x.type === "mcq") && norm(x.answer) !== norm(q.answer))
-      .map((x) => x.answer);
-    const uniq = shuffle([...new Set(pool)]).slice(0, 3);
-    while (uniq.length < 3) uniq.push("—");
-    return { options: shuffle([q.answer, ...uniq]).map((text) => ({ text })) };
-  }
-  if (q.type === "text") return {};
+  if (q.type === "text" || q.type === "choice") return {};
   if (q.type === "match") {
     return { rights: shuffle(q.pairs.map((p) => p[1])) };
   }
@@ -323,11 +315,11 @@ function paintCard() {
   const { q, built, locked } = quiz.card;
   const card = document.getElementById("card");
   let body = `<div class="q-prompt">${escapeHtml(q.prompt)}</div>`;
-  if (q.type === "mcq" || q.type === "choice") {
+  if (q.type === "mcq") {
     body += `<div class="options">${built.options.map((o, i) =>
       `<button class="opt" data-i="${i}">${o.letter ? `<b>${o.letter})</b> ` : ""}${escapeHtml(o.text)}</button>`
     ).join("")}</div>`;
-  } else if (q.type === "text") {
+  } else if (q.type === "text" || q.type === "choice") {
     body += `<input class="answer" id="ans" autocomplete="off" placeholder="напиши ответ">
       <div class="actions"><button class="go" id="check">Проверить</button></div>`;
   } else if (q.type === "match") {
@@ -344,7 +336,7 @@ function paintCard() {
   }
   body += `<div id="feedback"></div>`;
   card.innerHTML = body;
-  if (q.type === "mcq" || q.type === "choice") {
+  if (q.type === "mcq") {
     card.querySelectorAll(".opt").forEach((b) => b.onclick = () => {
       if (quiz.card.locked) return;
       const picked = built.options[b.dataset.i].text;
@@ -358,7 +350,7 @@ function paintCard() {
       }
       finish(ok, picked);
     });
-  } else if (q.type === "text") {
+  } else if (q.type === "text" || q.type === "choice") {
     const input = document.getElementById("ans");
     const check = () => {
       if (quiz.card.locked) return;
