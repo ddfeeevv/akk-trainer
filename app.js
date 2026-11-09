@@ -28,7 +28,55 @@ function save(replace) {
 function applyState(next) {
   state.wrongs = next.wrongs || [];
   state.seen = next.seen || {};
+  state.days = next.days || state.days || {};
   state.updated = next.updated || 0;
+}
+function saneDay(key) {
+  return typeof key === "string" && key >= "2024-01-01" && key <= "2100-01-01";
+}
+function dayKey(ts) {
+  const n = Number(ts);
+  if (!Number.isFinite(n) || n < Date.UTC(2024, 0, 1)) return "";
+  const d = new Date(n);
+  const p = (x) => String(x).padStart(2, "0");
+  return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
+}
+function mergeDays(a, b) {
+  const out = {};
+  new Set([...Object.keys(a || {}), ...Object.keys(b || {})]).forEach((key) => {
+    if (!saneDay(key)) return;
+    const x = (a || {})[key] || {};
+    const y = (b || {})[key] || {};
+    const ok = Math.max(x.ok || 0, y.ok || 0);
+    const bad = Math.max(x.bad || 0, y.bad || 0);
+    if (ok || bad) out[key] = { ok, bad };
+  });
+  return out;
+}
+function ensureDays() {
+  if (!state.days) {
+    const days = {};
+    const add = (key, field, n) => {
+      if (!key) return;
+      const row = days[key] || { ok: 0, bad: 0 };
+      row[field] += n;
+      days[key] = row;
+    };
+    (state.wrongs || []).forEach((w) => add(dayKey(w.at), "bad", 1));
+    const oks = Object.values(state.seen || {}).reduce((n, s) => n + (s.ok || 0), 0);
+    if (oks) add(dayKey(Date.now()), "ok", oks);
+    state.days = days;
+  }
+  Object.keys(state.days).forEach((key) => { if (!saneDay(key)) delete state.days[key]; });
+}
+function bumpDay(ok) {
+  if (!state.days) state.days = {};
+  const key = dayKey(Date.now());
+  if (!key) return;
+  const row = state.days[key] || { ok: 0, bad: 0 };
+  if (ok) row.ok += 1;
+  else row.bad += 1;
+  state.days[key] = row;
 }
 function mergeState(a, b) {
   const seen = {};
@@ -48,7 +96,7 @@ function mergeState(a, b) {
     if (w && w.id) map.set(w.id + "|" + w.at, w);
   });
   const wrongs = [...map.values()].sort((p, q) => (q.at || 0) - (p.at || 0)).slice(0, 120);
-  return { wrongs, seen, updated: Math.max(a.updated || 0, b.updated || 0) };
+  return { wrongs, seen, days: mergeDays(a.days, b.days), updated: Math.max(a.updated || 0, b.updated || 0) };
 }
 async function pullRemote() {
   const res = await fetch(REMOTE, { cache: "no-store" });
@@ -67,7 +115,7 @@ async function pushRemote(replace) {
   const res = await fetch(REMOTE, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ wrongs: state.wrongs, seen: state.seen, updated: state.updated }),
+    body: JSON.stringify({ wrongs: state.wrongs, seen: state.seen, days: state.days || {}, updated: state.updated }),
   });
   if (!res.ok) throw new Error("sync");
 }
@@ -80,8 +128,9 @@ async function refreshFromRemote() {
     if (screen === "home") renderHome();
     else if (screen === "stats") renderStats();
     else if (screen === "wrongs") renderWrongs(wrongFilter);
-    const localKey = JSON.stringify({ wrongs: state.wrongs, seen: state.seen });
-    const remoteKey = remote ? JSON.stringify({ wrongs: remote.wrongs, seen: remote.seen }) : "";
+    const pack = (s) => JSON.stringify({ wrongs: s.wrongs, seen: s.seen, days: s.days || {} });
+    const localKey = pack(state);
+    const remoteKey = remote ? pack(remote) : "";
     if (localKey !== remoteKey) syncing = syncing.then(() => pushRemote(true)).catch(() => {});
   } catch (e) {}
 }
@@ -118,6 +167,7 @@ function record(q, ok, picked) {
   else prev.bad += 1;
   prev.last = ok ? "ok" : "bad";
   state.seen[q.id] = prev;
+  bumpDay(ok);
   if (!ok) {
     state.wrongs.unshift({
       id: q.id,
@@ -428,10 +478,85 @@ function renderWrongs(filter) {
   };
 }
 
+function dayRows() {
+  return Object.keys(state.days || {}).filter(saneDay).sort().map((key) => ({
+    key,
+    ok: state.days[key].ok || 0,
+    bad: state.days[key].bad || 0,
+  }));
+}
+
+function chartsHtml() {
+  const rows = dayRows();
+  if (!rows.length) {
+    return `<div class="card chart"><div class="empty">Пока пусто. После ответов здесь появятся дни.</div></div>`;
+  }
+  const bars = stackedChart(rows);
+  const line = cumulativeChart(rows);
+  return `
+    <div class="card chart">
+      <b>Ответы по дням</b>
+      <div class="muted">Зелёные — верные, красные — ошибки. Старые верные ответы без времени лежат на сегодняшнем дне.</div>
+      ${bars}
+      <div class="legend"><span><i class="ok"></i>верно</span><span><i class="bad"></i>ошибка</span></div>
+    </div>
+    <div class="card chart">
+      <b>Верные ответы с накоплением</b>
+      ${line}
+    </div>`;
+}
+
+function stackedChart(rows) {
+  const max = Math.max(...rows.map((r) => r.ok + r.bad), 1);
+  const w = Math.max(320, rows.length * 56);
+  const h = 168;
+  const padL = 8, padR = 8, padT = 18, padB = 26;
+  const innerH = h - padT - padB;
+  const step = (w - padL - padR) / rows.length;
+  const bw = Math.min(28, step - 10);
+  const parts = rows.map((r, i) => {
+    const x = padL + i * step + (step - bw) / 2;
+    const okH = (r.ok / max) * innerH;
+    const badH = (r.bad / max) * innerH;
+    const base = padT + innerH;
+    const label = r.key.slice(8) + "." + r.key.slice(5, 7);
+    return `<rect class="bad" x="${x}" y="${base - okH - badH}" width="${bw}" height="${badH}" rx="3"></rect>
+      <rect class="ok" x="${x}" y="${base - okH}" width="${bw}" height="${okH}" rx="3"></rect>
+      <text class="count" x="${x + bw / 2}" y="${Math.max(12, base - okH - badH - 4)}" text-anchor="middle">${r.ok + r.bad}</text>
+      <text x="${x + bw / 2}" y="${h - 6}" text-anchor="middle">${label}</text>`;
+  }).join("");
+  return `<svg viewBox="0 0 ${w} ${h}" role="img">${parts}</svg>`;
+}
+
+function cumulativeChart(rows) {
+  const w = Math.max(320, rows.length * 56);
+  const h = 150;
+  const padL = 28, padR = 12, padT = 16, padB = 26;
+  const innerW = w - padL - padR;
+  const innerH = h - padT - padB;
+  let run = 0;
+  const pts = rows.map((r, i) => {
+    run += r.ok;
+    const x = padL + (rows.length === 1 ? innerW / 2 : (i / (rows.length - 1)) * innerW);
+    return { x, run, key: r.key };
+  });
+  const max = Math.max(run, 1);
+  const xy = pts.map((p) => `${p.x},${padT + innerH - (p.run / max) * innerH}`);
+  const dots = pts.map((p) => {
+    const y = padT + innerH - (p.run / max) * innerH;
+    const label = p.key.slice(8) + "." + p.key.slice(5, 7);
+    return `<circle cx="${p.x}" cy="${y}" r="3.5"></circle>
+      <text class="count" x="${p.x}" y="${Math.max(12, y - 8)}" text-anchor="middle">${p.run}</text>
+      <text x="${p.x}" y="${h - 6}" text-anchor="middle">${label}</text>`;
+  }).join("");
+  return `<svg viewBox="0 0 ${w} ${h}" role="img"><polyline points="${xy.join(" ")}"></polyline>${dots}</svg>`;
+}
+
 function renderStats() {
   const all = statsFor(null);
   app.innerHTML = `
     <h2>Статистика</h2>
+    ${chartsHtml()}
     <div class="card" style="margin-bottom:12px"><b>Общая ${all.acc}%</b><div class="muted">${all.correct} верных / ${all.attempts} попыток · вопросов ${all.total} · сейчас не закрыто ${all.failed}</div></div>
     <table>
       <tr><th>Предмет</th><th>Верно</th><th>%</th><th>Не закрыто</th></tr>
@@ -445,6 +570,7 @@ function renderStats() {
     if (!confirm("Сбросить статистику и ошибки?")) return;
     state.wrongs = [];
     state.seen = {};
+    state.days = {};
     save(true);
     renderStats();
   };
@@ -454,6 +580,7 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
+ensureDays();
 renderTop();
 setTab("home");
 refreshFromRemote();

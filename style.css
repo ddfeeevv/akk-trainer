@@ -69,5 +69,17 @@ select, input.answer { width: 100%; background: #222838; border: 1px solid var(-
 table { width: 100%; border-collapse: collapse; font-size: 14px; }
 th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); }
 th { color: var(--muted); font-weight: 600; }
+.chart { margin-bottom: 12px; }
+.chart b { display: block; margin-bottom: 4px; }
+.chart svg { width: 100%; height: auto; display: block; margin-top: 8px; }
+.chart text { fill: var(--muted); font-size: 11px; }
+.chart .count { fill: var(--text); }
+.chart rect.ok, .chart circle { fill: var(--ok); }
+.chart rect.bad { fill: var(--bad); }
+.chart polyline { fill: none; stroke: var(--ok); stroke-width: 2.5; stroke-linejoin: round; stroke-linecap: round; }
+.legend { display: flex; gap: 14px; color: var(--muted); font-size: 12px; margin-top: 4px; }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+.legend i.ok { background: var(--ok); }
+.legend i.bad { background: var(--bad); }
 h2 { margin: 4px 0 12px; font-size: 20px; }
 .empty { color: var(--muted); padding: 20px 0; }
