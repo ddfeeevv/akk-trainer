@@ -479,69 +479,43 @@ function dayRows() {
 }
 
 function chartsHtml() {
-  const rows = dayRows();
+  const rows = dayRows()
+    .map((r) => ({ ...r, n: r.ok + r.bad }))
+    .filter((r) => r.n > 100)
+    .map((r) => ({ ...r, pct: Math.round((r.ok / r.n) * 100) }));
   if (!rows.length) {
-    return `<div class="card chart"><div class="empty">Пока пусто. После ответов здесь появятся дни.</div></div>`;
+    return `<div class="card chart"><b>Процент верных по дням</b><div class="empty">График ведётся с дня, в котором решено больше 100 вопросов.</div></div>`;
   }
-  const bars = stackedChart(rows);
-  const line = cumulativeChart(rows);
   return `
     <div class="card chart">
-      <b>Ответы по дням</b>
-      <div class="muted">Зелёные — верные, красные — ошибки. Старые верные ответы без времени лежат на сегодняшнем дне.</div>
-      ${bars}
-      <div class="legend"><span><i class="ok"></i>верно</span><span><i class="bad"></i>ошибка</span></div>
-    </div>
-    <div class="card chart">
-      <b>Верные ответы с накоплением</b>
-      ${line}
+      <b>Процент верных по дням</b>
+      <div class="muted">Средний процент правильных. День попадает сюда, только если за него решено больше 100 вопросов.</div>
+      ${percentChart(rows)}
     </div>`;
 }
 
-function stackedChart(rows) {
-  const max = Math.max(...rows.map((r) => r.ok + r.bad), 1);
-  const w = Math.max(320, rows.length * 56);
-  const h = 168;
-  const padL = 8, padR = 8, padT = 18, padB = 26;
-  const innerH = h - padT - padB;
-  const step = (w - padL - padR) / rows.length;
-  const bw = Math.min(28, step - 10);
-  const parts = rows.map((r, i) => {
-    const x = padL + i * step + (step - bw) / 2;
-    const okH = (r.ok / max) * innerH;
-    const badH = (r.bad / max) * innerH;
-    const base = padT + innerH;
-    const label = r.key.slice(8) + "." + r.key.slice(5, 7);
-    return `<rect class="bad" x="${x}" y="${base - okH - badH}" width="${bw}" height="${badH}" rx="3"></rect>
-      <rect class="ok" x="${x}" y="${base - okH}" width="${bw}" height="${okH}" rx="3"></rect>
-      <text class="count" x="${x + bw / 2}" y="${Math.max(12, base - okH - badH - 4)}" text-anchor="middle">${r.ok + r.bad}</text>
-      <text x="${x + bw / 2}" y="${h - 6}" text-anchor="middle">${label}</text>`;
-  }).join("");
-  return `<svg viewBox="0 0 ${w} ${h}" role="img">${parts}</svg>`;
-}
-
-function cumulativeChart(rows) {
-  const w = Math.max(320, rows.length * 56);
-  const h = 150;
-  const padL = 28, padR = 12, padT = 16, padB = 26;
+function percentChart(rows) {
+  const w = Math.max(320, rows.length * 72);
+  const h = 180;
+  const padL = 36, padR = 16, padT = 22, padB = 28;
   const innerW = w - padL - padR;
   const innerH = h - padT - padB;
-  let run = 0;
-  const pts = rows.map((r, i) => {
-    run += r.ok;
-    const x = padL + (rows.length === 1 ? innerW / 2 : (i / (rows.length - 1)) * innerW);
-    return { x, run, key: r.key };
-  });
-  const max = Math.max(run, 1);
-  const xy = pts.map((p) => `${p.x},${padT + innerH - (p.run / max) * innerH}`);
-  const dots = pts.map((p) => {
-    const y = padT + innerH - (p.run / max) * innerH;
-    const label = p.key.slice(8) + "." + p.key.slice(5, 7);
-    return `<circle cx="${p.x}" cy="${y}" r="3.5"></circle>
-      <text class="count" x="${p.x}" y="${Math.max(12, y - 8)}" text-anchor="middle">${p.run}</text>
-      <text x="${p.x}" y="${h - 6}" text-anchor="middle">${label}</text>`;
+  const yOf = (pct) => padT + innerH - (pct / 100) * innerH;
+  const xOf = (i) => padL + (rows.length === 1 ? innerW / 2 : (i / (rows.length - 1)) * innerW);
+  const grids = [100, 50, 0].map((pct) => {
+    const y = yOf(pct);
+    return `<line class="grid" x1="${padL}" y1="${y}" x2="${w - padR}" y2="${y}"></line>
+      <text x="${padL - 8}" y="${y + 4}" text-anchor="end">${pct}</text>`;
   }).join("");
-  return `<svg viewBox="0 0 ${w} ${h}" role="img"><polyline points="${xy.join(" ")}"></polyline>${dots}</svg>`;
+  const pts = rows.map((r, i) => ({ x: xOf(i), y: yOf(r.pct), ...r }));
+  const line = `<polyline points="${pts.map((p) => `${p.x},${p.y}`).join(" ")}"></polyline>`;
+  const dots = pts.map((p) => {
+    const label = p.key.slice(8) + "." + p.key.slice(5, 7);
+    return `<circle cx="${p.x}" cy="${p.y}" r="4"></circle>
+      <text class="count" x="${p.x}" y="${Math.max(14, p.y - 10)}" text-anchor="middle">${p.pct}%</text>
+      <text x="${p.x}" y="${h - 8}" text-anchor="middle">${label}</text>`;
+  }).join("");
+  return `<svg viewBox="0 0 ${w} ${h}" role="img">${grids}${line}${dots}</svg>`;
 }
 
 function renderStats() {

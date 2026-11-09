@@ -77,6 +77,7 @@ th { color: var(--muted); font-weight: 600; }
 .chart rect.ok, .chart circle { fill: var(--ok); }
 .chart rect.bad { fill: var(--bad); }
 .chart polyline { fill: none; stroke: var(--ok); stroke-width: 2.5; stroke-linejoin: round; stroke-linecap: round; }
+.chart line.grid { stroke: var(--line); stroke-width: 1; }
 .legend { display: flex; gap: 14px; color: var(--muted); font-size: 12px; margin-top: 4px; }
 .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
 .legend i.ok { background: var(--ok); }
