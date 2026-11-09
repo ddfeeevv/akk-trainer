@@ -140,15 +140,24 @@ function showAnswer(q) {
 
 function statsFor(subject) {
   const qs = bySubject(subject);
-  let attempts = 0, correct = 0, failed = 0;
+  let attempts = 0, correct = 0, failed = 0, seenCount = 0;
   qs.forEach((q) => {
     const s = state.seen[q.id];
     if (!s) return;
+    seenCount += 1;
     attempts += s.ok + s.bad;
     correct += s.ok;
     if (s.last === "bad") failed += 1;
   });
-  return { total: qs.length, attempts, correct, failed, acc: attempts ? Math.round((correct / attempts) * 100) : 0 };
+  return {
+    total: qs.length,
+    attempts,
+    correct,
+    failed,
+    seenCount,
+    acc: attempts ? Math.round((correct / attempts) * 100) : 0,
+    cover: qs.length ? Math.round((seenCount / qs.length) * 100) : 0,
+  };
 }
 
 function renderTop() {
@@ -175,18 +184,18 @@ function renderHome() {
     <p class="muted">Выбери предмет. После ответа сразу видно, верно или нет. Ошибки копятся в банке. Прогресс один и тот же на всех устройствах.</p>
     <div class="card" style="margin-bottom:12px">
       <div class="row">
-        <div><b>Все сразу</b><div class="muted">${all.total} вопросов · ${all.acc}% · не закрыто ${all.failed}</div></div>
+        <div><b>Все сразу</b><div class="muted">${all.seenCount} из ${all.total} пройдено · верных ${all.acc}%</div></div>
         <button class="go" id="all">Тест</button>
       </div>
-      <div class="bar"><i style="width:${all.acc}%"></i></div>
+      <div class="bar"><i style="width:${all.cover}%"></i></div>
     </div>
     <div class="grid">
       ${bank.subjects.map((s) => {
         const st = statsFor(s.id);
         return `<button class="card subj" data-s="${s.id}">
           <h3>${s.id} · ${s.name}</h3>
-          <div class="muted">${st.total} вопросов · ${st.acc}% · ошибок ${st.failed}</div>
-          <div class="bar"><i style="width:${st.acc}%"></i></div>
+          <div class="muted">${st.seenCount} из ${st.total} · верных ${st.acc}% · ошибок ${st.failed}</div>
+          <div class="bar"><i style="width:${st.cover}%"></i></div>
         </button>`;
       }).join("")}
     </div>`;
