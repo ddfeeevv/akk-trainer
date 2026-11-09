@@ -1,22 +1,94 @@
 const KEY = "akk-trainer-v1";
+const REMOTE = "https://extendsclass.com/api/json-storage/bin/dabdfdd";
 const bank = window.BANK;
 const app = document.getElementById("app");
 
 const state = load();
 let screen = "home";
+let wrongFilter = "all";
 let quiz = null;
+let syncing = Promise.resolve();
 
 function load() {
   try {
     const raw = JSON.parse(localStorage.getItem(KEY) || "null");
     if (raw && raw.wrongs && raw.seen) return raw;
   } catch (e) {}
-  return { wrongs: [], seen: {} };
+  return { wrongs: [], seen: {}, updated: 0 };
 }
-function save() {
+function writeLocal() {
   localStorage.setItem(KEY, JSON.stringify(state));
-  renderTop();
 }
+function save(replace) {
+  state.updated = Date.now();
+  writeLocal();
+  renderTop();
+  syncing = syncing.then(() => pushRemote(replace)).catch(() => {});
+}
+function applyState(next) {
+  state.wrongs = next.wrongs || [];
+  state.seen = next.seen || {};
+  state.updated = next.updated || 0;
+}
+function mergeState(a, b) {
+  const seen = {};
+  const ids = new Set([...Object.keys(a.seen || {}), ...Object.keys(b.seen || {})]);
+  ids.forEach((id) => {
+    const x = (a.seen || {})[id] || {};
+    const y = (b.seen || {})[id] || {};
+    const ok = Math.max(x.ok || 0, y.ok || 0);
+    const bad = Math.max(x.bad || 0, y.bad || 0);
+    const xN = (x.ok || 0) + (x.bad || 0);
+    const yN = (y.ok || 0) + (y.bad || 0);
+    const last = yN > xN ? y.last : xN > yN ? x.last : ((b.updated || 0) >= (a.updated || 0) ? y.last || x.last : x.last || y.last);
+    if (ok || bad) seen[id] = { ok, bad, last };
+  });
+  const map = new Map();
+  [...(a.wrongs || []), ...(b.wrongs || [])].forEach((w) => {
+    if (w && w.id) map.set(w.id + "|" + w.at, w);
+  });
+  const wrongs = [...map.values()].sort((p, q) => (q.at || 0) - (p.at || 0)).slice(0, 120);
+  return { wrongs, seen, updated: Math.max(a.updated || 0, b.updated || 0) };
+}
+async function pullRemote() {
+  const res = await fetch(REMOTE, { cache: "no-store" });
+  if (!res.ok) return null;
+  const data = await res.json();
+  if (!data || !data.wrongs || !data.seen) return null;
+  return data;
+}
+async function pushRemote(replace) {
+  if (!replace) {
+    const remote = await pullRemote();
+    if (remote) applyState(mergeState(state, remote));
+  }
+  state.updated = Date.now();
+  writeLocal();
+  const res = await fetch(REMOTE, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ wrongs: state.wrongs, seen: state.seen, updated: state.updated }),
+  });
+  if (!res.ok) throw new Error("sync");
+}
+async function refreshFromRemote() {
+  try {
+    const remote = await pullRemote();
+    if (remote) applyState(mergeState(state, remote));
+    writeLocal();
+    renderTop();
+    if (screen === "home") renderHome();
+    else if (screen === "stats") renderStats();
+    else if (screen === "wrongs") renderWrongs(wrongFilter);
+    const localKey = JSON.stringify({ wrongs: state.wrongs, seen: state.seen });
+    const remoteKey = remote ? JSON.stringify({ wrongs: remote.wrongs, seen: remote.seen }) : "";
+    if (localKey !== remoteKey) syncing = syncing.then(() => pushRemote(true)).catch(() => {});
+  } catch (e) {}
+}
+window.addEventListener("focus", () => { refreshFromRemote(); });
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) refreshFromRemote();
+});
 
 function norm(s) {
   return String(s || "")
@@ -55,7 +127,7 @@ function record(q, ok, picked) {
       answer: showAnswer(q),
       at: Date.now(),
     });
-    state.wrongs = state.wrongs.slice(0, 400);
+    state.wrongs = state.wrongs.slice(0, 120);
   }
   save();
 }
@@ -100,7 +172,7 @@ function renderHome() {
   const all = statsFor(null);
   app.innerHTML = `
     <h2>Предметы</h2>
-    <p class="muted">Выбери предмет. После ответа сразу видно, верно или нет. Ошибки копятся в банке. Прогресс хранится в этом браузере.</p>
+    <p class="muted">Выбери предмет. После ответа сразу видно, верно или нет. Ошибки копятся в банке. Прогресс один и тот же на всех устройствах.</p>
     <div class="card" style="margin-bottom:12px">
       <div class="row">
         <div><b>Все сразу</b><div class="muted">${all.total} вопросов · ${all.acc}% · не закрыто ${all.failed}</div></div>
@@ -308,6 +380,7 @@ function renderDone() {
 }
 
 function renderWrongs(filter) {
+  wrongFilter = filter;
   const items = state.wrongs.filter((w) => filter === "all" || w.subject === filter);
   app.innerHTML = `
     <h2>Ошибки</h2>
@@ -333,7 +406,7 @@ function renderWrongs(filter) {
   document.getElementById("clear").onclick = () => {
     if (!confirm("Удалить сохранённые ошибки? Счёт попыток останется.")) return;
     state.wrongs = filter === "all" ? [] : state.wrongs.filter((w) => w.subject !== filter);
-    save();
+    save(true);
     renderWrongs(filter);
   };
 }
@@ -355,7 +428,7 @@ function renderStats() {
     if (!confirm("Сбросить статистику и ошибки?")) return;
     state.wrongs = [];
     state.seen = {};
-    save();
+    save(true);
     renderStats();
   };
 }
@@ -366,3 +439,4 @@ function escapeHtml(s) {
 
 renderTop();
 setTab("home");
+refreshFromRemote();
