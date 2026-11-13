@@ -64,6 +64,14 @@ select, input.answer { width: 100%; background: #222838; border: 1px solid var(-
 .wrong { font-size: 14px; }
 .wrong .was { color: var(--bad); }
 .wrong .need { color: var(--ok); }
+button:disabled { opacity: .4; cursor: default; }
+.deck { text-align: left; width: 100%; cursor: pointer; }
+.deck h3 { margin: 0 0 4px; font-size: 16px; }
+.reveal { font-size: 18px; font-weight: 750; margin-top: 12px; }
+.steps-view { margin: 12px 0 0; padding-left: 18px; }
+.steps-view li { margin: 6px 0; }
+.pair-line { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.pair-line span:last-child { color: var(--ok); text-align: right; }
 .filters { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
 .filters button.on { border-color: var(--accent); color: var(--accent); }
 table { width: 100%; border-collapse: collapse; font-size: 14px; }

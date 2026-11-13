@@ -5,9 +5,11 @@ const app = document.getElementById("app");
 
 const state = load();
 let screen = "home";
-let wrongFilter = "all";
 let quiz = null;
+let study = null;
 let syncing = Promise.resolve();
+const INTERVALS = [1, 3, 7, 14, 30];
+const byId = Object.fromEntries(bank.questions.map((q) => [q.id, q]));
 
 function load() {
   try {
@@ -29,6 +31,7 @@ function applyState(next) {
   state.wrongs = next.wrongs || [];
   state.seen = next.seen || {};
   state.days = next.days || state.days || {};
+  state.learn = next.learn || state.learn || {};
   state.updated = next.updated || 0;
 }
 function saneDay(key) {
@@ -96,7 +99,18 @@ function mergeState(a, b) {
     if (w && w.id) map.set(w.id + "|" + w.at, w);
   });
   const wrongs = [...map.values()].sort((p, q) => (q.at || 0) - (p.at || 0)).slice(0, 120);
-  return { wrongs, seen, days: mergeDays(a.days, b.days), updated: Math.max(a.updated || 0, b.updated || 0) };
+  return { wrongs, seen, days: mergeDays(a.days, b.days), learn: mergeLearn(a.learn, b.learn), updated: Math.max(a.updated || 0, b.updated || 0) };
+}
+function mergeLearn(a, b) {
+  const out = {};
+  new Set([...Object.keys(a || {}), ...Object.keys(b || {})]).forEach((id) => {
+    const x = (a || {})[id];
+    const y = (b || {})[id];
+    if (!x) out[id] = y;
+    else if (!y) out[id] = x;
+    else out[id] = (y.at || 0) >= (x.at || 0) ? y : x;
+  });
+  return out;
 }
 async function pullRemote() {
   const res = await fetch(REMOTE, { cache: "no-store" });
@@ -115,7 +129,7 @@ async function pushRemote(replace) {
   const res = await fetch(REMOTE, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ wrongs: state.wrongs, seen: state.seen, days: state.days || {}, updated: state.updated }),
+    body: JSON.stringify({ wrongs: state.wrongs, seen: state.seen, days: state.days || {}, learn: state.learn || {}, updated: state.updated }),
   });
   if (!res.ok) throw new Error("sync");
 }
@@ -127,8 +141,8 @@ async function refreshFromRemote() {
     renderTop();
     if (screen === "home") renderHome();
     else if (screen === "stats") renderStats();
-    else if (screen === "wrongs") renderWrongs(wrongFilter);
-    const pack = (s) => JSON.stringify({ wrongs: s.wrongs, seen: s.seen, days: s.days || {} });
+    else if (screen === "wrongs") renderLearnHome();
+    const pack = (s) => JSON.stringify({ wrongs: s.wrongs, seen: s.seen, days: s.days || {}, learn: s.learn || {} });
     const localKey = pack(state);
     const remoteKey = remote ? pack(remote) : "";
     if (localKey !== remoteKey) syncing = syncing.then(() => pushRemote(true)).catch(() => {});
@@ -168,6 +182,7 @@ function record(q, ok, picked) {
   prev.last = ok ? "ok" : "bad";
   state.seen[q.id] = prev;
   bumpDay(ok);
+  if (!state.learn) state.learn = {};
   if (!ok) {
     state.wrongs.unshift({
       id: q.id,
@@ -178,6 +193,14 @@ function record(q, ok, picked) {
       at: Date.now(),
     });
     state.wrongs = state.wrongs.slice(0, 120);
+    if (!record.keepLearn) state.learn[q.id] = { stage: 0, due: Date.now(), at: Date.now() };
+  } else {
+    state.wrongs = state.wrongs.filter((w) => w.id !== q.id);
+    const cur = state.learn[q.id];
+    if (cur && cur.stage < 5 && !record.keepLearn) {
+      const from = cur.stage || 0;
+      state.learn[q.id] = { stage: from >= 4 ? 5 : from + 1, due: addDays(Date.now(), INTERVALS[Math.min(from, 4)]), at: Date.now() };
+    }
   }
   save();
 }
@@ -220,16 +243,18 @@ function barHtml(st) {
 
 function renderTop() {
   const s = statsFor(null);
+  const due = dueCards(null).length;
   document.getElementById("top-stats").innerHTML =
-    `<b>${s.acc}%</b> верно<br>${s.correct}/${s.attempts || 0} · ошибок в банке ${state.wrongs.length}`;
+    `<b>${s.acc}%</b> верно<br>${s.correct}/${s.attempts || 0} · к повторению ${due}`;
 }
 
 function setTab(name) {
   screen = name;
   quiz = null;
+  study = null;
   document.querySelectorAll(".tabs button").forEach((b) => b.classList.toggle("on", b.dataset.tab === name));
   if (name === "home") renderHome();
-  if (name === "wrongs") renderWrongs("all");
+  if (name === "wrongs") renderLearnHome();
   if (name === "stats") renderStats();
 }
 
@@ -239,7 +264,7 @@ function renderHome() {
   const all = statsFor(null);
   app.innerHTML = `
     <h2>Предметы</h2>
-    <p class="muted">Выбери предмет. После ответа сразу видно, верно или нет. Ошибки копятся в банке. Прогресс один и тот же на всех устройствах.</p>
+    <p class="muted">Выбери предмет. После ответа сразу видно, верно или нет. Ошибки уходят в заучивание по предметам. Прогресс один и тот же на всех устройствах.</p>
     <div class="card" style="margin-bottom:12px">
       <div class="row">
         <div><b>Все сразу</b><div class="muted">${all.seenCount} из ${all.total} пройдено · верных ${all.acc}%</div></div>
@@ -430,44 +455,270 @@ function renderDone() {
     <div class="card"><b>${acc}%</b><div class="muted">${quiz.sessionOk} верных из ${quiz.sessionN}</div></div>
     <div class="actions">
       <button class="go" id="again">Ещё раз</button>
-      <button class="ghost" id="wrong">Только ошибки</button>
+      <button class="ghost" id="wrong">Заучить ошибки</button>
       <button class="ghost" id="home">К предметам</button>
     </div>`;
   document.getElementById("again").onclick = () => startQuiz(quiz.subject, "all");
-  document.getElementById("wrong").onclick = () => startQuiz(quiz.subject, "wrong");
+  document.getElementById("wrong").onclick = () => startStudy(quiz.subject);
   document.getElementById("home").onclick = () => setTab("home");
 }
 
-function renderWrongs(filter) {
-  wrongFilter = filter;
-  const items = state.wrongs.filter((w) => filter === "all" || w.subject === filter);
+function startOfDay(ts) {
+  const d = new Date(ts);
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+}
+function addDays(ts, days) {
+  const d = new Date(startOfDay(ts));
+  d.setDate(d.getDate() + days);
+  return d.getTime();
+}
+function whenLabel(ts) {
+  const days = Math.round((startOfDay(ts) - startOfDay(Date.now())) / 86400000);
+  if (days <= 1) return "завтра";
+  return "через " + days + " дн.";
+}
+function ensureLearn() {
+  if (!state.learn) state.learn = {};
+  const now = Date.now();
+  const ids = new Set((state.wrongs || []).map((w) => w.id));
+  Object.keys(state.seen || {}).forEach((id) => {
+    if (state.seen[id].last === "bad") ids.add(id);
+  });
+  ids.forEach((id) => {
+    if (!byId[id] || state.learn[id]) return;
+    state.learn[id] = { stage: 0, due: now, at: now };
+  });
+}
+function dueCards(subject) {
+  ensureLearn();
+  const now = Date.now();
+  return bank.questions.filter((q) => {
+    if (subject && q.subject !== subject) return false;
+    const rec = state.learn[q.id];
+    return rec && rec.stage < 5 && rec.due <= now;
+  });
+}
+function deckSummary(id) {
+  ensureLearn();
+  const now = Date.now();
+  const sum = { due: 0, later: 0, learned: 0, soon: null };
+  bank.questions.forEach((q) => {
+    if (q.subject !== id) return;
+    const rec = state.learn[q.id];
+    if (!rec) return;
+    if (rec.stage >= 5) sum.learned += 1;
+    else if (rec.due <= now) sum.due += 1;
+    else {
+      sum.later += 1;
+      if (sum.soon === null || rec.due < sum.soon) sum.soon = rec.due;
+    }
+  });
+  return sum;
+}
+function renderLearnHome() {
+  screen = "wrongs";
+  study = null;
+  ensureLearn();
+  const due = dueCards(null);
+  const rows = bank.subjects.map((s) => ({ s, sum: deckSummary(s.id) })).filter((r) => r.sum.due || r.sum.later || r.sum.learned);
   app.innerHTML = `
-    <h2>Ошибки</h2>
-    <div class="filters">
-      <button class="ghost ${filter === "all" ? "on" : ""}" data-f="all">Все</button>
-      ${bank.subjects.map((s) => `<button class="ghost ${filter === s.id ? "on" : ""}" data-f="${s.id}">${s.id}</button>`).join("")}
-    </div>
-    <div class="actions" style="margin-top:0;margin-bottom:12px">
-      <button class="go" id="drill">Пройти эти</button>
-      <button class="ghost" id="clear">Очистить банк</button>
+    <h2>Заучивание</h2>
+    <p class="muted">Сначала смотришь верный ответ, потом вспоминаешь сам. Ошибка вернётся через пару карточек. Верно — завтра, затем через 3, 7, 14 и 30 дней.</p>
+    <div class="card" style="margin-bottom:12px">
+      <div class="row">
+        <div><b>${due.length}</b><div class="muted">к повторению сегодня</div></div>
+        <button class="go" id="go-all" ${due.length ? "" : "disabled"}>Учить</button>
+      </div>
     </div>
     <div class="list">
-      ${items.length ? items.slice(0, 80).map((w) => `
-        <div class="card wrong">
-          <div class="muted">${w.subject} · ${new Date(w.at).toLocaleString("ru")}</div>
-          <div>${escapeHtml(w.prompt)}</div>
-          <div class="was">твой: ${escapeHtml(w.picked)}</div>
-          <div class="need">нужно: ${escapeHtml(w.answer)}</div>
-        </div>`).join("") : `<div class="empty">Пока чисто.</div>`}
+      ${rows.length ? rows.map(({ s, sum }) => `
+        <button class="card deck" data-s="${s.id}" ${sum.due ? "" : "disabled"}>
+          <h3>${s.id} · ${s.name}</h3>
+          <div class="muted">${sum.due} к повторению${sum.later ? ` · ${sum.later} ждут, ближайшее ${whenLabel(sum.soon)}` : ""}${sum.learned ? ` · ${sum.learned} выучено` : ""}</div>
+        </button>`).join("") : `<div class="empty">Пока нечего учить. Ошибки из тестов сами разложатся по предметам.</div>`}
     </div>`;
-  app.querySelectorAll(".filters button").forEach((b) => b.onclick = () => renderWrongs(b.dataset.f));
-  document.getElementById("drill").onclick = () => startQuiz(filter === "all" ? null : filter, "wrong");
-  document.getElementById("clear").onclick = () => {
-    if (!confirm("Удалить сохранённые ошибки? Счёт попыток останется.")) return;
-    state.wrongs = filter === "all" ? [] : state.wrongs.filter((w) => w.subject !== filter);
-    save(true);
-    renderWrongs(filter);
+  const all = document.getElementById("go-all");
+  if (all) all.onclick = () => startStudy(null);
+  app.querySelectorAll(".deck").forEach((b) => {
+    if (b.disabled) return;
+    b.onclick = () => startStudy(b.dataset.s);
+  });
+}
+function startStudy(subject) {
+  const batch = shuffle(dueCards(subject)).slice(0, 7);
+  if (!batch.length) return renderLearnHome();
+  const previews = shuffle(batch.filter((q) => (state.learn[q.id].stage || 0) === 0)).map((q) => ({ id: q.id, tier: 0 }));
+  screen = "study";
+  study = {
+    subject,
+    batch,
+    queue: previews,
+    later: [],
+    tries: {},
+    finished: [],
+    current: null,
+    built: null,
+    locked: false,
+    phase: previews.length ? "preview" : "test",
   };
+  if (!previews.length) study.queue = testQueue(batch);
+  nextStudy();
+}
+function testQueue(batch) {
+  return shuffle(batch.map((q) => ({ id: q.id, tier: q.type === "order" || q.type === "match" ? 2 : 1 })));
+}
+function nextStudy() {
+  if (!study.queue.length && study.phase === "preview") {
+    study.phase = "test";
+    study.queue = testQueue(study.batch);
+  } else if (!study.queue.length && study.phase === "test") {
+    study.phase = "prod";
+    study.queue = shuffle(study.later);
+    study.later = [];
+  }
+  if (!study.queue.length) return renderStudyDone();
+  study.current = study.queue.shift();
+  study.locked = false;
+  study.built = buildStudy(byId[study.current.id], study.current.tier);
+  renderStudyCard();
+}
+function choicesFor(q) {
+  if (q.type === "mcq") return q.options.slice();
+  const pool = bank.questions
+    .filter((x) => x.subject === q.subject && x.id !== q.id && x.answer && norm(x.answer) !== norm(q.answer) && x.answer.length < 90)
+    .map((x) => x.answer);
+  return [q.answer, ...shuffle([...new Set(pool)]).slice(0, 3)];
+}
+function buildStudy(q, tier) {
+  if (tier === 0) return {};
+  if (tier === 2 && q.type === "order") return { left: shuffle(q.steps.slice()), picked: [] };
+  if (tier === 2 && q.type === "match") return { rights: shuffle(q.pairs.map((p) => p[1])) };
+  if (tier === 1) return { options: shuffle(choicesFor(q)) };
+  return {};
+}
+function revealHtml(q) {
+  if (q.type === "order") return `<ol class="steps-view">${q.steps.map((s) => `<li>${escapeHtml(s)}</li>`).join("")}</ol>`;
+  if (q.type === "match") return q.pairs.map((p) => `<div class="pair-line"><span>${escapeHtml(p[0])}</span><span>${escapeHtml(p[1])}</span></div>`).join("");
+  return `<div class="reveal">${escapeHtml(q.answer)}</div>`;
+}
+function renderStudyCard() {
+  const item = study.current;
+  const q = byId[item.id];
+  const name = bank.subjects.find((s) => s.id === q.subject).name;
+  const kind = item.tier === 0 ? "Запомни" : item.tier === 1 ? "Узнай" : "Вспомни";
+  app.innerHTML = `
+    <div class="row">
+      <div><div class="badge">${kind} · ${q.subject}</div><div class="muted">${name} · ${study.finished.length} / ${study.batch.length}</div></div>
+      <button class="ghost" id="quit">Выйти</button>
+    </div>
+    <div class="qcard" id="card"></div>`;
+  document.getElementById("quit").onclick = () => setTab("wrongs");
+  const card = document.getElementById("card");
+  let body = `<div class="q-prompt">${escapeHtml(q.prompt)}</div>`;
+  if (item.tier === 0) {
+    body += `${revealHtml(q)}<div class="actions"><button class="go" id="next">Запомнил</button></div>`;
+  } else if (item.tier === 1) {
+    body += `<div class="options">${study.built.options.map((text, i) => `<button class="opt" data-i="${i}">${escapeHtml(text)}</button>`).join("")}</div>`;
+  } else if (q.type === "order") {
+    body += `<div class="muted">Нажимай шаги в правильном порядке</div><div class="picked" id="picked"></div><div class="chips" id="pool"></div>
+      <div class="actions"><button class="ghost" id="undo">Сбросить</button><button class="go" id="check">Проверить</button></div>`;
+  } else if (q.type === "match") {
+    body += q.pairs.map((p, i) => `<div class="pair"><div>${escapeHtml(p[0])}</div><select data-i="${i}"><option value="">выбери</option>${study.built.rights.map((r) => `<option>${escapeHtml(r)}</option>`).join("")}</select></div>`).join("") +
+      `<div class="actions"><button class="go" id="check">Проверить</button></div>`;
+  } else {
+    body += `<input class="answer" id="ans" autocomplete="off" placeholder="напиши ответ"><div class="actions"><button class="go" id="check">Проверить</button></div>`;
+  }
+  body += `<div id="feedback"></div>`;
+  card.innerHTML = body;
+  if (item.tier === 0) document.getElementById("next").onclick = () => nextStudy();
+  else if (item.tier === 1) card.querySelectorAll(".opt").forEach((b) => b.onclick = () => {
+    if (study.locked) return;
+    studyGrade(norm(study.built.options[b.dataset.i]) === norm(q.answer), study.built.options[b.dataset.i]);
+  });
+  else if (q.type === "order") bindOrder(q);
+  else if (q.type === "match") document.getElementById("check").onclick = () => {
+    if (study.locked) return;
+    const selects = [...card.querySelectorAll("select")];
+    const ok = q.pairs.every((p, i) => norm(selects[i].value) === norm(p[1]));
+    studyGrade(ok, selects.map((s, i) => q.pairs[i][0] + "→" + (s.value || "—")).join("; "));
+  };
+  else {
+    const check = () => {
+      if (study.locked) return;
+      const picked = document.getElementById("ans").value.trim();
+      studyGrade(norm(picked) === norm(q.answer), picked || "—");
+    };
+    document.getElementById("check").onclick = check;
+    document.getElementById("ans").addEventListener("keydown", (e) => { if (e.key === "Enter") check(); });
+    document.getElementById("ans").focus();
+  }
+}
+function bindOrder(q) {
+  const draw = () => {
+    document.getElementById("picked").innerHTML = study.built.picked.map((s, i) => `<button class="chip" data-p="${i}">${i + 1}. ${escapeHtml(s)}</button>`).join("");
+    document.getElementById("pool").innerHTML = study.built.left.map((s, i) => `<button class="chip" data-l="${i}">${escapeHtml(s)}</button>`).join("");
+    document.querySelectorAll("#picked .chip").forEach((b) => b.onclick = () => {
+      if (study.locked) return;
+      study.built.left.push(study.built.picked.splice(b.dataset.p, 1)[0]);
+      draw();
+    });
+    document.querySelectorAll("#pool .chip").forEach((b) => b.onclick = () => {
+      if (study.locked) return;
+      study.built.picked.push(study.built.left.splice(b.dataset.l, 1)[0]);
+      draw();
+    });
+  };
+  draw();
+  document.getElementById("undo").onclick = () => {
+    if (study.locked) return;
+    study.built.left = shuffle(q.steps.slice());
+    study.built.picked = [];
+    draw();
+  };
+  document.getElementById("check").onclick = () => {
+    if (study.locked) return;
+    const ok = study.built.picked.length === q.steps.length && study.built.picked.every((s, i) => norm(s) === norm(q.steps[i]));
+    studyGrade(ok, study.built.picked.join(" → ") || "—");
+  };
+}
+function studyGrade(ok, picked) {
+  const item = study.current;
+  const q = byId[item.id];
+  study.locked = true;
+  const card = document.getElementById("card");
+  card.querySelectorAll("select, input, button").forEach((el) => { el.disabled = true; });
+  if (ok && item.tier === 1) study.later.push({ id: item.id, tier: 2 });
+  else if (ok) commitStudy(q, true, picked);
+  else {
+    const key = item.id + "|" + item.tier;
+    study.tries[key] = (study.tries[key] || 0) + 1;
+    if (study.tries[key] < 2) study.queue.splice(Math.min(study.queue.length, 2), 0, { id: item.id, tier: item.tier });
+    else commitStudy(q, false, picked);
+  }
+  document.getElementById("feedback").innerHTML = `<div class="banner ${ok ? "good" : "bad"}"><b>${ok ? "Верно" : "Неверно"}</b><div>${ok ? "" : escapeHtml(showAnswer(q))}</div></div><div class="actions"><button class="go" id="next">Дальше</button></div>`;
+  document.getElementById("next").onclick = () => nextStudy();
+}
+function commitStudy(q, ok, picked) {
+  const from = (state.learn[q.id] && state.learn[q.id].stage) || 0;
+  if (ok) state.learn[q.id] = { stage: from >= 4 ? 5 : from + 1, due: addDays(Date.now(), INTERVALS[Math.min(from, 4)]), at: Date.now() };
+  else state.learn[q.id] = { stage: 0, due: addDays(Date.now(), 1), at: Date.now() };
+  if (!study.finished.includes(q.id)) study.finished.push(q.id);
+  record.keepLearn = true;
+  record(q, ok, picked);
+  record.keepLearn = false;
+}
+function renderStudyDone() {
+  const again = dueCards(study.subject).length;
+  app.innerHTML = `
+    <h2>Пачка готова</h2>
+    <div class="card"><b>${study.finished.length}</b><div class="muted">карточек закрыто · ещё сегодня ${again}</div></div>
+    <div class="actions">
+      <button class="go" id="more" ${again ? "" : "disabled"}>Ещё пачку</button>
+      <button class="ghost" id="home">К предметам</button>
+    </div>`;
+  document.getElementById("more").onclick = () => startStudy(study.subject);
+  document.getElementById("home").onclick = () => setTab("wrongs");
 }
 
 function dayRows() {
@@ -537,6 +788,7 @@ function renderStats() {
     state.wrongs = [];
     state.seen = {};
     state.days = {};
+    state.learn = {};
     save(true);
     renderStats();
   };
