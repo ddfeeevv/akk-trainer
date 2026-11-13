@@ -8,7 +8,7 @@ let screen = "home";
 let quiz = null;
 let study = null;
 let syncing = Promise.resolve();
-const INTERVALS = [1, 3, 7, 14, 30];
+const INTERVALS_HOURS = [4, 24, 24, 48, 72];
 const byId = Object.fromEntries(bank.questions.map((q) => [q.id, q]));
 
 function load() {
@@ -199,7 +199,7 @@ function record(q, ok, picked) {
     const cur = state.learn[q.id];
     if (cur && cur.stage < 5 && !record.keepLearn) {
       const from = cur.stage || 0;
-      state.learn[q.id] = { stage: from >= 4 ? 5 : from + 1, due: addDays(Date.now(), INTERVALS[Math.min(from, 4)]), at: Date.now() };
+      state.learn[q.id] = { stage: from >= 4 ? 5 : from + 1, due: dueAfter(from), at: Date.now() };
     }
   }
   save();
@@ -468,14 +468,14 @@ function startOfDay(ts) {
   d.setHours(0, 0, 0, 0);
   return d.getTime();
 }
-function addDays(ts, days) {
-  const d = new Date(startOfDay(ts));
-  d.setDate(d.getDate() + days);
-  return d.getTime();
+function dueAfter(stage) {
+  const hours = INTERVALS_HOURS[Math.min(stage, INTERVALS_HOURS.length - 1)];
+  return Date.now() + hours * 3600000;
 }
 function whenLabel(ts) {
   const days = Math.round((startOfDay(ts) - startOfDay(Date.now())) / 86400000);
-  if (days <= 1) return "завтра";
+  if (days <= 0) return "сегодня";
+  if (days === 1) return "завтра";
   return "через " + days + " дн.";
 }
 function ensureLearn() {
@@ -488,6 +488,15 @@ function ensureLearn() {
   ids.forEach((id) => {
     if (!byId[id] || state.learn[id]) return;
     state.learn[id] = { stage: 0, due: now, at: now };
+  });
+  Object.keys(state.learn).forEach((id) => {
+    const rec = state.learn[id];
+    if (!rec || rec.stage >= 5) return;
+    const cap = now + INTERVALS_HOURS[Math.min(rec.stage, 4)] * 3600000;
+    if (rec.due > cap) {
+      rec.due = cap;
+      rec.at = now;
+    }
   });
 }
 function dueCards(subject) {
@@ -524,7 +533,7 @@ function renderLearnHome() {
   const rows = bank.subjects.map((s) => ({ s, sum: deckSummary(s.id) })).filter((r) => r.sum.due || r.sum.later || r.sum.learned);
   app.innerHTML = `
     <h2>Заучивание</h2>
-    <p class="muted">Сначала смотришь верный ответ, потом вспоминаешь сам. Ошибка вернётся через пару карточек. Верно — завтра, затем через 3, 7, 14 и 30 дней.</p>
+    <p class="muted">Сначала смотришь ответ, потом вспоминаешь. Ошибка в пачке вернётся через пару карточек и ещё раз сегодня. Верный ответ тоже вернётся сегодня, потом на следующий день: за неделю карточка доходит до «выучено».</p>
     <div class="card" style="margin-bottom:12px">
       <div class="row">
         <div><b>${due.length}</b><div class="muted">к повторению сегодня</div></div>
@@ -701,8 +710,8 @@ function studyGrade(ok, picked) {
 }
 function commitStudy(q, ok, picked) {
   const from = (state.learn[q.id] && state.learn[q.id].stage) || 0;
-  if (ok) state.learn[q.id] = { stage: from >= 4 ? 5 : from + 1, due: addDays(Date.now(), INTERVALS[Math.min(from, 4)]), at: Date.now() };
-  else state.learn[q.id] = { stage: 0, due: addDays(Date.now(), 1), at: Date.now() };
+  if (ok) state.learn[q.id] = { stage: from >= 4 ? 5 : from + 1, due: dueAfter(from), at: Date.now() };
+  else state.learn[q.id] = { stage: 0, due: Date.now() + 3 * 3600000, at: Date.now() };
   if (!study.finished.includes(q.id)) study.finished.push(q.id);
   record.keepLearn = true;
   record(q, ok, picked);
