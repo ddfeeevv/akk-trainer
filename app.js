@@ -575,7 +575,10 @@ function startStudy(subject) {
   nextStudy();
 }
 function testQueue(batch) {
-  return shuffle(batch.map((q) => ({ id: q.id, tier: q.type === "order" || q.type === "match" ? 2 : 1 })));
+  return shuffle(batch.map((q) => {
+    const direct = q.type === "order" || q.type === "match" || (q.type !== "mcq" && choicesFor(q).length < 3);
+    return { id: q.id, tier: direct ? 2 : 1 };
+  }));
 }
 function nextStudy() {
   if (!study.queue.length && study.phase === "preview") {
@@ -592,12 +595,49 @@ function nextStudy() {
   study.built = buildStudy(byId[study.current.id], study.current.tier);
   renderStudyCard();
 }
+function answerKind(answer) {
+  const s = String(answer || "").trim();
+  if (/^\d{3,4}$/.test(s)) return "year";
+  if (/\d/.test(s)) return "num";
+  return "text";
+}
+function yearPool(subject) {
+  const years = new Set();
+  const grab = (value) => {
+    const found = String(value).match(/(?:^|[^\d])([6-9]\d{2}|1\d{3})(?!\d)/g);
+    if (!found) return;
+    found.forEach((chunk) => {
+      const year = chunk.match(/[6-9]\d{2}|1\d{3}/);
+      if (year) years.add(year[0]);
+    });
+  };
+  bank.questions.forEach((q) => {
+    if (q.subject !== subject) return;
+    if (q.answer) grab(q.answer);
+    (q.options || []).forEach(grab);
+    (q.pairs || []).forEach((pair) => { grab(pair[0]); grab(pair[1]); });
+  });
+  return [...years];
+}
 function choicesFor(q) {
   if (q.type === "mcq") return q.options.slice();
-  const pool = bank.questions
-    .filter((x) => x.subject === q.subject && x.id !== q.id && x.answer && norm(x.answer) !== norm(q.answer) && x.answer.length < 90)
-    .map((x) => x.answer);
-  return [q.answer, ...shuffle([...new Set(pool)]).slice(0, 3)];
+  const correct = q.answer;
+  const kind = answerKind(correct);
+  let pool = [];
+  if (kind === "year") pool = yearPool(q.subject);
+  else {
+    pool = bank.questions
+      .filter((x) => x.subject === q.subject && x.answer && answerKind(x.answer) === kind)
+      .map((x) => x.answer);
+    if (kind === "text") {
+      const words = correct.trim().split(/\s+/).length;
+      const close = pool.filter((item) => Math.abs(item.trim().split(/\s+/).length - words) <= 1 && item.length < 40);
+      if (close.length >= 4) pool = close;
+    }
+  }
+  const uniq = shuffle([...new Set(pool.filter((item) => norm(item) !== norm(correct)))]).slice(0, 3);
+  if (uniq.length < 2) return [correct];
+  return [correct, ...uniq];
 }
 function buildStudy(q, tier) {
   if (tier === 0) return {};
