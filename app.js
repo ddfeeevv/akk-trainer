@@ -8,7 +8,6 @@ let screen = "home";
 let quiz = null;
 let study = null;
 let syncing = Promise.resolve();
-const INTERVALS_HOURS = [4, 24, 24, 48, 72];
 const byId = Object.fromEntries(bank.questions.map((q) => [q.id, q]));
 
 function load() {
@@ -193,14 +192,10 @@ function record(q, ok, picked) {
       at: Date.now(),
     });
     state.wrongs = state.wrongs.slice(0, 120);
-    if (!record.keepLearn) state.learn[q.id] = { stage: 0, due: Date.now(), at: Date.now() };
+    state.learn[q.id] = { at: Date.now() };
   } else {
     state.wrongs = state.wrongs.filter((w) => w.id !== q.id);
-    const cur = state.learn[q.id];
-    if (cur && cur.stage < 5 && !record.keepLearn) {
-      const from = cur.stage || 0;
-      state.learn[q.id] = { stage: from >= 4 ? 5 : from + 1, due: dueAfter(from), at: Date.now() };
-    }
+    delete state.learn[q.id];
   }
   save();
 }
@@ -245,7 +240,7 @@ function renderTop() {
   const s = statsFor(null);
   const due = dueCards(null).length;
   document.getElementById("top-stats").innerHTML =
-    `<b>${s.acc}%</b> верно<br>${s.correct}/${s.attempts || 0} · к повторению ${due}`;
+    `<b>${s.acc}%</b> верно<br>${s.correct}/${s.attempts || 0} · ещё учить ${due}`;
 }
 
 function setTab(name) {
@@ -463,199 +458,76 @@ function renderDone() {
   document.getElementById("home").onclick = () => setTab("home");
 }
 
-function startOfDay(ts) {
-  const d = new Date(ts);
-  d.setHours(0, 0, 0, 0);
-  return d.getTime();
-}
-function dueAfter(stage) {
-  const hours = INTERVALS_HOURS[Math.min(stage, INTERVALS_HOURS.length - 1)];
-  return Date.now() + hours * 3600000;
-}
-function whenLabel(ts) {
-  const days = Math.round((startOfDay(ts) - startOfDay(Date.now())) / 86400000);
-  if (days <= 0) return "сегодня";
-  if (days === 1) return "завтра";
-  return "через " + days + " дн.";
-}
 function ensureLearn() {
   if (!state.learn) state.learn = {};
   const now = Date.now();
-  const ids = new Set((state.wrongs || []).map((w) => w.id));
+  const open = new Set();
+  (state.wrongs || []).forEach((w) => { if (byId[w.id]) open.add(w.id); });
   Object.keys(state.seen || {}).forEach((id) => {
-    if (state.seen[id].last === "bad") ids.add(id);
+    if (!byId[id]) return;
+    if (state.seen[id].last === "ok") open.delete(id);
+    else if (state.seen[id].last === "bad") open.add(id);
   });
-  ids.forEach((id) => {
-    if (!byId[id] || state.learn[id]) return;
-    state.learn[id] = { stage: 0, due: now, at: now };
-  });
-  Object.keys(state.learn).forEach((id) => {
-    const rec = state.learn[id];
-    if (!rec || rec.stage >= 5) return;
-    const cap = now + INTERVALS_HOURS[Math.min(rec.stage, 4)] * 3600000;
-    if (rec.due > cap) {
-      rec.due = cap;
-      rec.at = now;
-    }
-  });
+  Object.keys(state.learn).forEach((id) => { if (!open.has(id)) delete state.learn[id]; });
+  open.forEach((id) => { if (!state.learn[id]) state.learn[id] = { at: now }; });
 }
 function dueCards(subject) {
   ensureLearn();
-  const now = Date.now();
-  return bank.questions.filter((q) => {
-    if (subject && q.subject !== subject) return false;
-    const rec = state.learn[q.id];
-    return rec && rec.stage < 5 && rec.due <= now;
-  });
-}
-function deckSummary(id) {
-  ensureLearn();
-  const now = Date.now();
-  const sum = { due: 0, later: 0, learned: 0, soon: null };
-  bank.questions.forEach((q) => {
-    if (q.subject !== id) return;
-    const rec = state.learn[q.id];
-    if (!rec) return;
-    if (rec.stage >= 5) sum.learned += 1;
-    else if (rec.due <= now) sum.due += 1;
-    else {
-      sum.later += 1;
-      if (sum.soon === null || rec.due < sum.soon) sum.soon = rec.due;
-    }
-  });
-  return sum;
+  return bank.questions.filter((q) => (!subject || q.subject === subject) && state.learn[q.id]);
 }
 function renderLearnHome() {
   screen = "wrongs";
   study = null;
   ensureLearn();
   const due = dueCards(null);
-  const rows = bank.subjects.map((s) => ({ s, sum: deckSummary(s.id) })).filter((r) => r.sum.due || r.sum.later || r.sum.learned);
+  const rows = bank.subjects.map((s) => ({ s, n: dueCards(s.id).length })).filter((r) => r.n);
   app.innerHTML = `
     <h2>Заучивание</h2>
-    <p class="muted">Сначала смотришь ответ, потом вспоминаешь. Ошибка в пачке вернётся через пару карточек и ещё раз сегодня. Верный ответ тоже вернётся сегодня, потом на следующий день: за неделю карточка доходит до «выучено».</p>
+    <p class="muted">Один верный ответ закрывает вопрос. Снова он попадёт сюда, только если ошибёшься в тесте. Спрашивает так же, как тест: где выбор — кнопки, где написание — поле.</p>
     <div class="card" style="margin-bottom:12px">
       <div class="row">
-        <div><b>${due.length}</b><div class="muted">к повторению сегодня</div></div>
+        <div><b>${due.length}</b><div class="muted">ещё не закрыто</div></div>
         <button class="go" id="go-all" ${due.length ? "" : "disabled"}>Учить</button>
       </div>
     </div>
     <div class="list">
-      ${rows.length ? rows.map(({ s, sum }) => `
-        <button class="card deck" data-s="${s.id}" ${sum.due ? "" : "disabled"}>
+      ${rows.length ? rows.map(({ s, n }) => `
+        <button class="card deck" data-s="${s.id}">
           <h3>${s.id} · ${s.name}</h3>
-          <div class="muted">${sum.due} к повторению${sum.later ? ` · ${sum.later} ждут, ближайшее ${whenLabel(sum.soon)}` : ""}${sum.learned ? ` · ${sum.learned} выучено` : ""}</div>
+          <div class="muted">${n} ещё не закрыто</div>
         </button>`).join("") : `<div class="empty">Пока нечего учить. Ошибки из тестов сами разложатся по предметам.</div>`}
     </div>`;
   const all = document.getElementById("go-all");
   if (all) all.onclick = () => startStudy(null);
-  app.querySelectorAll(".deck").forEach((b) => {
-    if (b.disabled) return;
-    b.onclick = () => startStudy(b.dataset.s);
-  });
+  app.querySelectorAll(".deck").forEach((b) => b.onclick = () => startStudy(b.dataset.s));
 }
 function startStudy(subject) {
   const batch = shuffle(dueCards(subject)).slice(0, 7);
   if (!batch.length) return renderLearnHome();
-  const previews = shuffle(batch.filter((q) => (state.learn[q.id].stage || 0) === 0)).map((q) => ({ id: q.id, tier: 0 }));
   screen = "study";
-  study = {
-    subject,
-    batch,
-    queue: previews,
-    later: [],
-    tries: {},
-    finished: [],
-    current: null,
-    built: null,
-    locked: false,
-    phase: previews.length ? "preview" : "test",
-  };
-  if (!previews.length) study.queue = testQueue(batch);
+  study = { subject, batch, queue: shuffle(batch.map((q) => q.id)), finished: [], current: null, built: null, locked: false };
   nextStudy();
 }
-function testQueue(batch) {
-  return shuffle(batch.map((q) => {
-    const direct = q.type === "order" || q.type === "match" || (q.type !== "mcq" && choicesFor(q).length < 3);
-    return { id: q.id, tier: direct ? 2 : 1 };
-  }));
-}
 function nextStudy() {
-  if (!study.queue.length && study.phase === "preview") {
-    study.phase = "test";
-    study.queue = testQueue(study.batch);
-  } else if (!study.queue.length && study.phase === "test") {
-    study.phase = "prod";
-    study.queue = shuffle(study.later);
-    study.later = [];
-  }
   if (!study.queue.length) return renderStudyDone();
   study.current = study.queue.shift();
   study.locked = false;
-  study.built = buildStudy(byId[study.current.id], study.current.tier);
+  study.built = buildStudy(byId[study.current]);
   renderStudyCard();
 }
-function answerKind(answer) {
-  const s = String(answer || "").trim();
-  if (/^\d{3,4}$/.test(s)) return "year";
-  if (/\d/.test(s)) return "num";
-  return "text";
-}
-function yearPool(subject) {
-  const years = new Set();
-  const grab = (value) => {
-    const found = String(value).match(/(?:^|[^\d])([6-9]\d{2}|1\d{3})(?!\d)/g);
-    if (!found) return;
-    found.forEach((chunk) => {
-      const year = chunk.match(/[6-9]\d{2}|1\d{3}/);
-      if (year) years.add(year[0]);
-    });
-  };
-  bank.questions.forEach((q) => {
-    if (q.subject !== subject) return;
-    if (q.answer) grab(q.answer);
-    (q.options || []).forEach(grab);
-    (q.pairs || []).forEach((pair) => { grab(pair[0]); grab(pair[1]); });
-  });
-  return [...years];
-}
-function choicesFor(q) {
-  if (q.type === "mcq") return q.options.slice();
-  const correct = q.answer;
-  const kind = answerKind(correct);
-  let pool = [];
-  if (kind === "year") pool = yearPool(q.subject);
-  else {
-    pool = bank.questions
-      .filter((x) => x.subject === q.subject && x.answer && answerKind(x.answer) === kind)
-      .map((x) => x.answer);
-    if (kind === "text") {
-      const words = correct.trim().split(/\s+/).length;
-      const close = pool.filter((item) => Math.abs(item.trim().split(/\s+/).length - words) <= 1 && item.length < 40);
-      if (close.length >= 4) pool = close;
-    }
+function buildStudy(q) {
+  if (q.type === "mcq") {
+    const letters = ["а", "б", "в", "г", "д", "е"];
+    return { options: q.options.map((text, i) => ({ text, letter: letters[i] || String(i + 1) })) };
   }
-  const uniq = shuffle([...new Set(pool.filter((item) => norm(item) !== norm(correct)))]).slice(0, 3);
-  if (uniq.length < 2) return [correct];
-  return [correct, ...uniq];
-}
-function buildStudy(q, tier) {
-  if (tier === 0) return {};
-  if (tier === 2 && q.type === "order") return { left: shuffle(q.steps.slice()), picked: [] };
-  if (tier === 2 && q.type === "match") return { rights: shuffle(q.pairs.map((p) => p[1])) };
-  if (tier === 1) return { options: shuffle(choicesFor(q)) };
+  if (q.type === "order") return { left: shuffle(q.steps.slice()), picked: [] };
+  if (q.type === "match") return { rights: shuffle(q.pairs.map((p) => p[1])) };
   return {};
 }
-function revealHtml(q) {
-  if (q.type === "order") return `<ol class="steps-view">${q.steps.map((s) => `<li>${escapeHtml(s)}</li>`).join("")}</ol>`;
-  if (q.type === "match") return q.pairs.map((p) => `<div class="pair-line"><span>${escapeHtml(p[0])}</span><span>${escapeHtml(p[1])}</span></div>`).join("");
-  return `<div class="reveal">${escapeHtml(q.answer)}</div>`;
-}
 function renderStudyCard() {
-  const item = study.current;
-  const q = byId[item.id];
+  const q = byId[study.current];
   const name = bank.subjects.find((s) => s.id === q.subject).name;
-  const kind = item.tier === 0 ? "Запомни" : item.tier === 1 ? "Узнай" : "Вспомни";
+  const kind = { text: "Открытый", choice: "Открытый", mcq: "Тест", match: "Соответствие", order: "Порядок" }[q.type];
   app.innerHTML = `
     <div class="row">
       <div><div class="badge">${kind} · ${q.subject}</div><div class="muted">${name} · ${study.finished.length} / ${study.batch.length}</div></div>
@@ -665,10 +537,8 @@ function renderStudyCard() {
   document.getElementById("quit").onclick = () => setTab("wrongs");
   const card = document.getElementById("card");
   let body = `<div class="q-prompt">${escapeHtml(q.prompt)}</div>`;
-  if (item.tier === 0) {
-    body += `${revealHtml(q)}<div class="actions"><button class="go" id="next">Запомнил</button></div>`;
-  } else if (item.tier === 1) {
-    body += `<div class="options">${study.built.options.map((text, i) => `<button class="opt" data-i="${i}">${escapeHtml(text)}</button>`).join("")}</div>`;
+  if (q.type === "mcq") {
+    body += `<div class="options">${study.built.options.map((o, i) => `<button class="opt" data-i="${i}">${o.letter ? `<b>${o.letter})</b> ` : ""}${escapeHtml(o.text)}</button>`).join("")}</div>`;
   } else if (q.type === "order") {
     body += `<div class="muted">Нажимай шаги в правильном порядке</div><div class="picked" id="picked"></div><div class="chips" id="pool"></div>
       <div class="actions"><button class="ghost" id="undo">Сбросить</button><button class="go" id="check">Проверить</button></div>`;
@@ -680,10 +550,10 @@ function renderStudyCard() {
   }
   body += `<div id="feedback"></div>`;
   card.innerHTML = body;
-  if (item.tier === 0) document.getElementById("next").onclick = () => nextStudy();
-  else if (item.tier === 1) card.querySelectorAll(".opt").forEach((b) => b.onclick = () => {
+  if (q.type === "mcq") card.querySelectorAll(".opt").forEach((b) => b.onclick = () => {
     if (study.locked) return;
-    studyGrade(norm(study.built.options[b.dataset.i]) === norm(q.answer), study.built.options[b.dataset.i]);
+    const picked = study.built.options[b.dataset.i].text;
+    studyGrade(norm(picked) === norm(q.answer), picked);
   });
   else if (q.type === "order") bindOrder(q);
   else if (q.type === "match") document.getElementById("check").onclick = () => {
@@ -732,36 +602,20 @@ function bindOrder(q) {
   };
 }
 function studyGrade(ok, picked) {
-  const item = study.current;
-  const q = byId[item.id];
+  const q = byId[study.current];
   study.locked = true;
   const card = document.getElementById("card");
   card.querySelectorAll("select, input, button").forEach((el) => { el.disabled = true; });
-  if (ok && item.tier === 1) study.later.push({ id: item.id, tier: 2 });
-  else if (ok) commitStudy(q, true, picked);
-  else {
-    const key = item.id + "|" + item.tier;
-    study.tries[key] = (study.tries[key] || 0) + 1;
-    if (study.tries[key] < 2) study.queue.splice(Math.min(study.queue.length, 2), 0, { id: item.id, tier: item.tier });
-    else commitStudy(q, false, picked);
-  }
+  if (!study.finished.includes(q.id)) study.finished.push(q.id);
+  record(q, ok, picked);
   document.getElementById("feedback").innerHTML = `<div class="banner ${ok ? "good" : "bad"}"><b>${ok ? "Верно" : "Неверно"}</b><div>${ok ? "" : escapeHtml(showAnswer(q))}</div></div><div class="actions"><button class="go" id="next">Дальше</button></div>`;
   document.getElementById("next").onclick = () => nextStudy();
-}
-function commitStudy(q, ok, picked) {
-  const from = (state.learn[q.id] && state.learn[q.id].stage) || 0;
-  if (ok) state.learn[q.id] = { stage: from >= 4 ? 5 : from + 1, due: dueAfter(from), at: Date.now() };
-  else state.learn[q.id] = { stage: 0, due: Date.now() + 3 * 3600000, at: Date.now() };
-  if (!study.finished.includes(q.id)) study.finished.push(q.id);
-  record.keepLearn = true;
-  record(q, ok, picked);
-  record.keepLearn = false;
 }
 function renderStudyDone() {
   const again = dueCards(study.subject).length;
   app.innerHTML = `
     <h2>Пачка готова</h2>
-    <div class="card"><b>${study.finished.length}</b><div class="muted">карточек закрыто · ещё сегодня ${again}</div></div>
+    <div class="card"><b>${study.finished.length}</b><div class="muted">пройдено · ещё не закрыто ${again}</div></div>
     <div class="actions">
       <button class="go" id="more" ${again ? "" : "disabled"}>Ещё пачку</button>
       <button class="ghost" id="home">К предметам</button>
