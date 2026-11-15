@@ -218,7 +218,7 @@ function statsFor(subject) {
     if (s.last === "bad") failed += 1;
   });
   const passed = seenCount - failed;
-  const share = (n) => (qs.length ? (n / qs.length) * 100 : 0);
+  const share = (n) => (seenCount ? (n / seenCount) * 100 : 0);
   return {
     total: qs.length,
     attempts,
@@ -226,7 +226,7 @@ function statsFor(subject) {
     failed,
     seenCount,
     passed,
-    acc: attempts ? Math.round((correct / attempts) * 100) : 0,
+    acc: seenCount ? Math.round((passed / seenCount) * 100) : 0,
     okPct: share(passed),
     badPct: share(failed),
   };
@@ -240,7 +240,7 @@ function renderTop() {
   const s = statsFor(null);
   const due = dueCards(null).length;
   document.getElementById("top-stats").innerHTML =
-    `<b>${s.acc}%</b> верно<br>${s.correct}/${s.attempts || 0} · ещё учить ${due}`;
+    `<b>${s.acc}%</b> верно<br>${s.passed}/${s.seenCount || 0} · ещё учить ${due}`;
 }
 
 function setTab(name) {
@@ -695,12 +695,12 @@ function renderStats() {
   app.innerHTML = `
     <h2>Статистика</h2>
     ${chartsHtml()}
-    <div class="card" style="margin-bottom:12px"><b>Общая ${all.acc}%</b><div class="muted">${all.correct} верных / ${all.attempts} попыток · вопросов ${all.total} · сейчас не закрыто ${all.failed}</div></div>
+    <div class="card" style="margin-bottom:12px"><b>Общая ${all.acc}%</b><div class="muted">${all.passed} из ${all.seenCount} по последнему ответу · вопросов ${all.total} · сейчас не закрыто ${all.failed}</div></div>
     <table>
       <tr><th>Предмет</th><th>Верно</th><th>%</th><th>Не закрыто</th></tr>
       ${bank.subjects.map((s) => {
         const st = statsFor(s.id);
-        return `<tr><td>${s.id} ${s.name}</td><td>${st.correct}/${st.attempts || 0}</td><td>${st.acc}%</td><td>${st.failed}</td></tr>`;
+        return `<tr><td>${s.id} ${s.name}</td><td>${st.passed}/${st.seenCount || 0}</td><td>${st.acc}%</td><td>${st.failed}</td></tr>`;
       }).join("")}
     </table>
     <div class="actions"><button class="ghost" id="reset">Сбросить всё</button></div>`;
