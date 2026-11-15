@@ -91,7 +91,27 @@ function mergeState(a, b) {
     const xN = (x.ok || 0) + (x.bad || 0);
     const yN = (y.ok || 0) + (y.bad || 0);
     const last = yN > xN ? y.last : xN > yN ? x.last : ((b.updated || 0) >= (a.updated || 0) ? y.last || x.last : x.last || y.last);
-    if (ok || bad) seen[id] = { ok, bad, last };
+    let test = x.test;
+    let testedAt = x.testedAt || 0;
+    if ((y.testedAt || 0) > testedAt) {
+      test = y.test;
+      testedAt = y.testedAt || 0;
+    } else if (!test && y.test) {
+      test = y.test;
+      testedAt = y.testedAt || testedAt;
+    }
+    if (!(test === "ok" || test === "bad")) {
+      test = "";
+      testedAt = 0;
+    }
+    if (ok || bad || test) {
+      const row = { ok, bad, last };
+      if (test) {
+        row.test = test;
+        row.testedAt = testedAt;
+      }
+      seen[id] = row;
+    }
   });
   const map = new Map();
   [...(a.wrongs || []), ...(b.wrongs || [])].forEach((w) => {
@@ -174,30 +194,68 @@ function bySubject(id) {
   return bank.questions.filter((q) => !id || q.subject === id);
 }
 
-function record(q, ok, picked) {
+function noteWrong(q, picked) {
+  if (!state.learn) state.learn = {};
+  state.wrongs.unshift({
+    id: q.id,
+    subject: q.subject,
+    prompt: q.prompt,
+    picked: picked || "—",
+    answer: showAnswer(q),
+    at: Date.now(),
+  });
+  state.wrongs = state.wrongs.slice(0, 120);
+  state.learn[q.id] = { at: Date.now() };
+}
+function noteRight(q) {
+  state.wrongs = state.wrongs.filter((w) => w.id !== q.id);
+  if (state.learn) delete state.learn[q.id];
+}
+function recordTest(q, ok, picked) {
   const prev = state.seen[q.id] || { ok: 0, bad: 0 };
   if (ok) prev.ok += 1;
   else prev.bad += 1;
-  prev.last = ok ? "ok" : "bad";
   state.seen[q.id] = prev;
   bumpDay(ok);
-  if (!state.learn) state.learn = {};
-  if (!ok) {
-    state.wrongs.unshift({
-      id: q.id,
-      subject: q.subject,
-      prompt: q.prompt,
-      picked: picked || "—",
-      answer: showAnswer(q),
-      at: Date.now(),
-    });
-    state.wrongs = state.wrongs.slice(0, 120);
-    state.learn[q.id] = { at: Date.now() };
-  } else {
-    state.wrongs = state.wrongs.filter((w) => w.id !== q.id);
-    delete state.learn[q.id];
-  }
+  if (ok) noteRight(q);
+  else noteWrong(q, picked);
+  if (quiz) quiz.marks[q.id] = ok ? "ok" : "bad";
   save();
+}
+function recordStudy(q, ok, picked) {
+  if (ok) noteRight(q);
+  else noteWrong(q, picked);
+  save();
+}
+function commitQuiz() {
+  if (!quiz || quiz.committed || quiz.mode !== "all") return;
+  if (quiz.sessionN < quiz.queue.length) return;
+  if (quiz.queue.length !== bySubject(quiz.subject).length) return;
+  const at = Date.now();
+  let complete = true;
+  quiz.queue.forEach((q) => {
+    const mark = quiz.marks[q.id];
+    if (mark !== "ok" && mark !== "bad") complete = false;
+  });
+  if (!complete) return;
+  quiz.queue.forEach((q) => {
+    const prev = state.seen[q.id] || { ok: 0, bad: 0 };
+    prev.test = quiz.marks[q.id];
+    prev.last = quiz.marks[q.id];
+    prev.testedAt = at;
+    state.seen[q.id] = prev;
+  });
+  quiz.committed = true;
+  save();
+}
+function ensureTests() {
+  Object.keys(state.seen || {}).forEach((id) => {
+    const s = state.seen[id];
+    if (!s || s.test === "ok" || s.test === "bad") return;
+    if (s.last !== "ok" && s.last !== "bad") return;
+    s.test = s.last;
+    s.testedAt = s.testedAt || state.updated || 1;
+  });
 }
 
 function showAnswer(q) {
@@ -208,27 +266,30 @@ function showAnswer(q) {
 
 function statsFor(subject) {
   const qs = bySubject(subject);
-  let attempts = 0, correct = 0, failed = 0, seenCount = 0;
+  let attempts = 0, correct = 0, seenCount = 0, tested = 0, testOk = 0, testBad = 0;
   qs.forEach((q) => {
     const s = state.seen[q.id];
     if (!s) return;
     seenCount += 1;
-    attempts += s.ok + s.bad;
-    correct += s.ok;
-    if (s.last === "bad") failed += 1;
+    attempts += (s.ok || 0) + (s.bad || 0);
+    correct += s.ok || 0;
+    if (s.test !== "ok" && s.test !== "bad") return;
+    tested += 1;
+    if (s.test === "ok") testOk += 1;
+    else testBad += 1;
   });
-  const passed = seenCount - failed;
-  const share = (n) => (seenCount ? (n / seenCount) * 100 : 0);
+  const share = (n) => (tested ? (n / tested) * 100 : 0);
   return {
     total: qs.length,
     attempts,
     correct,
-    failed,
     seenCount,
-    passed,
-    acc: seenCount ? Math.round((passed / seenCount) * 100) : 0,
-    okPct: share(passed),
-    badPct: share(failed),
+    tested,
+    testOk,
+    testBad,
+    acc: tested ? Math.round((testOk / tested) * 100) : 0,
+    okPct: share(testOk),
+    badPct: share(testBad),
   };
 }
 
@@ -240,7 +301,7 @@ function renderTop() {
   const s = statsFor(null);
   const due = dueCards(null).length;
   document.getElementById("top-stats").innerHTML =
-    `<b>${s.acc}%</b> верно<br>${s.passed}/${s.seenCount || 0} · ещё учить ${due}`;
+    `<b>${s.acc}%</b> верно<br>${s.testOk}/${s.tested || 0} · ещё учить ${due}`;
 }
 
 function setTab(name) {
@@ -262,7 +323,7 @@ function renderHome() {
     <p class="muted">Выбери предмет. После ответа сразу видно, верно или нет. Ошибки уходят в заучивание по предметам. Прогресс один и тот же на всех устройствах.</p>
     <div class="card" style="margin-bottom:12px">
       <div class="row">
-        <div><b>Все сразу</b><div class="muted">${all.seenCount} из ${all.total} пройдено · верных ${all.acc}%</div></div>
+        <div><b>Все сразу</b><div class="muted">${all.tested} из ${all.total} в последнем тесте · верных ${all.acc}%</div></div>
         <button class="go" id="all">Тест</button>
       </div>
       ${barHtml(all)}
@@ -272,7 +333,7 @@ function renderHome() {
         const st = statsFor(s.id);
         return `<button class="card subj" data-s="${s.id}">
           <h3>${s.id} · ${s.name}</h3>
-          <div class="muted">${st.seenCount} из ${st.total} · верных ${st.acc}% · ошибок ${st.failed}</div>
+          <div class="muted">${st.tested} из ${st.total} · верных ${st.acc}% · в тесте ошибок ${st.testBad}</div>
           ${barHtml(st)}
         </button>`;
       }).join("")}
@@ -289,7 +350,7 @@ function startQuiz(subject, mode) {
     const ids = new Set(state.wrongs.filter((w) => !subject || w.subject === subject).map((w) => w.id));
     pool = pool.filter((q) => ids.has(q.id) || (state.seen[q.id] && state.seen[q.id].last === "bad"));
   }
-  quiz = { subject, mode, queue: shuffle(pool), index: 0, sessionOk: 0, sessionN: 0, card: null };
+  quiz = { subject, mode, queue: shuffle(pool), index: 0, sessionOk: 0, sessionN: 0, card: null, marks: {}, committed: false };
   if (!quiz.queue.length) {
     app.innerHTML = `<h2>Пусто</h2><p class="empty">В этом наборе нет вопросов.</p><button class="ghost" id="back">Назад</button>`;
     document.getElementById("back").onclick = () => setTab("home");
@@ -427,7 +488,8 @@ function finish(ok, picked) {
   const q = quiz.card.q;
   quiz.sessionN += 1;
   if (ok) quiz.sessionOk += 1;
-  record(q, ok, picked);
+  recordTest(q, ok, picked);
+  if (quiz.sessionN >= quiz.queue.length) commitQuiz();
   const card = document.getElementById("card");
   card.querySelectorAll(".actions").forEach((el) => el.remove());
   card.querySelectorAll("select, input, button").forEach((el) => { el.disabled = true; });
@@ -461,15 +523,13 @@ function renderDone() {
 function ensureLearn() {
   if (!state.learn) state.learn = {};
   const now = Date.now();
-  const open = new Set();
-  (state.wrongs || []).forEach((w) => { if (byId[w.id]) open.add(w.id); });
-  Object.keys(state.seen || {}).forEach((id) => {
-    if (!byId[id]) return;
-    if (state.seen[id].last === "ok") open.delete(id);
-    else if (state.seen[id].last === "bad") open.add(id);
+  (state.wrongs || []).forEach((w) => {
+    if (!byId[w.id] || state.learn[w.id]) return;
+    const seen = state.seen[w.id];
+    if (seen && seen.last === "ok") return;
+    state.learn[w.id] = { at: w.at || now };
   });
-  Object.keys(state.learn).forEach((id) => { if (!open.has(id)) delete state.learn[id]; });
-  open.forEach((id) => { if (!state.learn[id]) state.learn[id] = { at: now }; });
+  Object.keys(state.learn).forEach((id) => { if (!byId[id]) delete state.learn[id]; });
 }
 function dueCards(subject) {
   ensureLearn();
@@ -483,7 +543,7 @@ function renderLearnHome() {
   const rows = bank.subjects.map((s) => ({ s, n: dueCards(s.id).length })).filter((r) => r.n);
   app.innerHTML = `
     <h2>Заучивание</h2>
-    <p class="muted">Сначала показываю ответ. Потом спрашиваю один раз так же, как в тесте: где выбор — кнопки, где написание — поле. Верный ответ закрывает вопрос, пока снова не ошибёшься в тесте.</p>
+    <p class="muted">Сначала показываю ответ. Потом спрашиваю один раз так же, как в тесте. Верный ответ закрывает вопрос здесь. Процент и полоска предмета от этого не меняются — их обновляет только тест, пройденный целиком.</p>
     <div class="card" style="margin-bottom:12px">
       <div class="row">
         <div><b>${due.length}</b><div class="muted">ещё не закрыто</div></div>
@@ -625,7 +685,7 @@ function studyGrade(ok, picked) {
   const card = document.getElementById("card");
   card.querySelectorAll("select, input, button").forEach((el) => { el.disabled = true; });
   if (!study.finished.includes(q.id)) study.finished.push(q.id);
-  record(q, ok, picked);
+  recordStudy(q, ok, picked);
   document.getElementById("feedback").innerHTML = `<div class="banner ${ok ? "good" : "bad"}"><b>${ok ? "Верно" : "Неверно"}</b><div>${ok ? "" : escapeHtml(showAnswer(q))}</div></div><div class="actions"><button class="go" id="next">Дальше</button></div>`;
   document.getElementById("next").onclick = () => nextStudy();
 }
@@ -695,12 +755,12 @@ function renderStats() {
   app.innerHTML = `
     <h2>Статистика</h2>
     ${chartsHtml()}
-    <div class="card" style="margin-bottom:12px"><b>Общая ${all.acc}%</b><div class="muted">${all.passed} из ${all.seenCount} по последнему ответу · вопросов ${all.total} · сейчас не закрыто ${all.failed}</div></div>
+    <div class="card" style="margin-bottom:12px"><b>Общая ${all.acc}%</b><div class="muted">${all.testOk} из ${all.tested} в последнем тесте · вопросов ${all.total} · ещё учить ${dueCards(null).length}</div></div>
     <table>
-      <tr><th>Предмет</th><th>Верно</th><th>%</th><th>Не закрыто</th></tr>
+      <tr><th>Предмет</th><th>Верно</th><th>%</th><th>Учить</th></tr>
       ${bank.subjects.map((s) => {
         const st = statsFor(s.id);
-        return `<tr><td>${s.id} ${s.name}</td><td>${st.passed}/${st.seenCount || 0}</td><td>${st.acc}%</td><td>${st.failed}</td></tr>`;
+        return `<tr><td>${s.id} ${s.name}</td><td>${st.testOk}/${st.tested || 0}</td><td>${st.acc}%</td><td>${dueCards(s.id).length}</td></tr>`;
       }).join("")}
     </table>
     <div class="actions"><button class="ghost" id="reset">Сбросить всё</button></div>`;
@@ -720,6 +780,7 @@ function escapeHtml(s) {
 }
 
 ensureDays();
+ensureTests();
 renderTop();
 setTab("home");
 refreshFromRemote();
