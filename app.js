@@ -483,7 +483,7 @@ function renderLearnHome() {
   const rows = bank.subjects.map((s) => ({ s, n: dueCards(s.id).length })).filter((r) => r.n);
   app.innerHTML = `
     <h2>Заучивание</h2>
-    <p class="muted">Один верный ответ закрывает вопрос. Снова он попадёт сюда, только если ошибёшься в тесте. Спрашивает так же, как тест: где выбор — кнопки, где написание — поле.</p>
+    <p class="muted">Сначала показываю ответ. Потом спрашиваю один раз так же, как в тесте: где выбор — кнопки, где написание — поле. Верный ответ закрывает вопрос, пока снова не ошибёшься в тесте.</p>
     <div class="card" style="margin-bottom:12px">
       <div class="row">
         <div><b>${due.length}</b><div class="muted">ещё не закрыто</div></div>
@@ -504,16 +504,26 @@ function renderLearnHome() {
 function startStudy(subject) {
   const batch = shuffle(dueCards(subject)).slice(0, 7);
   if (!batch.length) return renderLearnHome();
+  const ids = batch.map((q) => q.id);
   screen = "study";
-  study = { subject, batch, queue: shuffle(batch.map((q) => q.id)), finished: [], current: null, built: null, locked: false };
+  study = { subject, batch, phase: "preview", queue: shuffle(ids.slice()), ask: ids, finished: [], current: null, built: null, locked: false };
   nextStudy();
 }
 function nextStudy() {
+  if (!study.queue.length && study.phase === "preview") {
+    study.phase = "ask";
+    study.queue = shuffle(study.ask.slice());
+  }
   if (!study.queue.length) return renderStudyDone();
   study.current = study.queue.shift();
   study.locked = false;
-  study.built = buildStudy(byId[study.current]);
+  study.built = study.phase === "ask" ? buildStudy(byId[study.current]) : null;
   renderStudyCard();
+}
+function revealHtml(q) {
+  if (q.type === "order") return `<ol class="steps-view">${q.steps.map((s) => `<li>${escapeHtml(s)}</li>`).join("")}</ol>`;
+  if (q.type === "match") return q.pairs.map((p) => `<div class="pair-line"><span>${escapeHtml(p[0])}</span><span>${escapeHtml(p[1])}</span></div>`).join("");
+  return `<div class="reveal">${escapeHtml(q.answer)}</div>`;
 }
 function buildStudy(q) {
   if (q.type === "mcq") {
@@ -527,16 +537,24 @@ function buildStudy(q) {
 function renderStudyCard() {
   const q = byId[study.current];
   const name = bank.subjects.find((s) => s.id === q.subject).name;
-  const kind = { text: "Открытый", choice: "Открытый", mcq: "Тест", match: "Соответствие", order: "Порядок" }[q.type];
+  const preview = study.phase === "preview";
+  const kind = preview ? "Запомни" : { text: "Открытый", choice: "Открытый", mcq: "Тест", match: "Соответствие", order: "Порядок" }[q.type];
+  const place = study.batch.length - study.queue.length;
   app.innerHTML = `
     <div class="row">
-      <div><div class="badge">${kind} · ${q.subject}</div><div class="muted">${name} · ${study.finished.length} / ${study.batch.length}</div></div>
+      <div><div class="badge">${kind} · ${q.subject}</div><div class="muted">${name} · ${place} / ${study.batch.length}</div></div>
       <button class="ghost" id="quit">Выйти</button>
     </div>
     <div class="qcard" id="card"></div>`;
   document.getElementById("quit").onclick = () => setTab("wrongs");
   const card = document.getElementById("card");
   let body = `<div class="q-prompt">${escapeHtml(q.prompt)}</div>`;
+  if (preview) {
+    body += `${revealHtml(q)}<div class="actions"><button class="go" id="next">Запомнил</button></div><div id="feedback"></div>`;
+    card.innerHTML = body;
+    document.getElementById("next").onclick = () => nextStudy();
+    return;
+  }
   if (q.type === "mcq") {
     body += `<div class="options">${study.built.options.map((o, i) => `<button class="opt" data-i="${i}">${o.letter ? `<b>${o.letter})</b> ` : ""}${escapeHtml(o.text)}</button>`).join("")}</div>`;
   } else if (q.type === "order") {
