@@ -328,6 +328,13 @@ function renderHome() {
       </div>
       ${barHtml(all)}
     </div>
+    <div class="card" style="margin-bottom:12px">
+      <div class="row">
+        <div><b>Случайная аккредитация</b><div class="muted">Сколько вопросов набрать из всех предметов</div></div>
+        <input class="count" id="exam-n" type="number" min="1" max="${all.total}" value="40" inputmode="numeric">
+        <button class="go" id="exam">Начать</button>
+      </div>
+    </div>
     <div class="grid">
       ${bank.subjects.map((s) => {
         const st = statsFor(s.id);
@@ -339,7 +346,31 @@ function renderHome() {
       }).join("")}
     </div>`;
   document.getElementById("all").onclick = () => startQuiz(null, "all");
+  document.getElementById("exam").onclick = () => startExam(document.getElementById("exam-n").value);
   app.querySelectorAll(".subj").forEach((b) => b.onclick = () => startQuiz(b.dataset.s, "all"));
+}
+
+function startExam(raw) {
+  const total = bank.questions.length;
+  const count = Math.round(Number(raw));
+  if (!Number.isFinite(count) || count < 1) return;
+  const n = Math.min(total, count);
+  screen = "quiz";
+  document.querySelectorAll(".tabs button").forEach((b) => b.classList.remove("on"));
+  quiz = {
+    subject: null,
+    mode: n === total ? "all" : "exam",
+    exam: true,
+    examN: n,
+    queue: shuffle(bank.questions).slice(0, n),
+    index: 0,
+    sessionOk: 0,
+    sessionN: 0,
+    card: null,
+    marks: {},
+    committed: false,
+  };
+  renderCard();
 }
 
 function startQuiz(subject, mode) {
@@ -366,7 +397,7 @@ function current() {
 function renderCard() {
   const q = current();
   if (!q) return renderDone();
-  const name = quiz.subject ? bank.subjects.find((s) => s.id === quiz.subject).name : "Все предметы";
+  const name = quiz.exam ? "Случайная аккредитация" : (quiz.subject ? bank.subjects.find((s) => s.id === quiz.subject).name : "Все предметы");
   const kind = { text: "Открытый", choice: "Открытый", mcq: "Тест", match: "Соответствие", order: "Порядок" }[q.type];
   quiz.card = { q, locked: false, built: buildCard(q) };
   app.innerHTML = `
@@ -505,18 +536,38 @@ function finish(ok, picked) {
   };
 }
 
+function examBreakdown() {
+  const tally = {};
+  quiz.queue.forEach((q) => {
+    const row = tally[q.subject] || { n: 0, ok: 0 };
+    row.n += 1;
+    if (quiz.marks[q.id] === "ok") row.ok += 1;
+    tally[q.subject] = row;
+  });
+  const body = bank.subjects.filter((s) => tally[s.id]).map((s) => {
+    const row = tally[s.id];
+    const pct = row.n ? Math.round((row.ok / row.n) * 100) : 0;
+    return `<tr><td>${s.id} ${s.name}</td><td>${row.ok}/${row.n}</td><td>${pct}%</td></tr>`;
+  }).join("");
+  return `<table><tr><th>Предмет</th><th>Верно</th><th>%</th></tr>${body}</table>`;
+}
+
 function renderDone() {
   const acc = quiz.sessionN ? Math.round((quiz.sessionOk / quiz.sessionN) * 100) : 0;
+  const exam = !!quiz.exam;
   app.innerHTML = `
-    <h2>Сессия</h2>
+    <h2>${exam ? "Результат" : "Сессия"}</h2>
     <div class="card"><b>${acc}%</b><div class="muted">${quiz.sessionOk} верных из ${quiz.sessionN}</div></div>
+    ${exam ? examBreakdown() : ""}
     <div class="actions">
       <button class="go" id="again">Ещё раз</button>
       <button class="ghost" id="wrong">Заучить ошибки</button>
       <button class="ghost" id="home">К предметам</button>
     </div>`;
-  document.getElementById("again").onclick = () => startQuiz(quiz.subject, "all");
-  document.getElementById("wrong").onclick = () => startStudy(quiz.subject);
+  const againN = quiz.examN;
+  const againSubject = quiz.subject;
+  document.getElementById("again").onclick = () => exam ? startExam(againN) : startQuiz(againSubject, "all");
+  document.getElementById("wrong").onclick = () => startStudy(againSubject);
   document.getElementById("home").onclick = () => setTab("home");
 }
 

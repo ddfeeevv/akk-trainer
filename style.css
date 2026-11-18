@@ -57,6 +57,7 @@ button, select { font: inherit; color: inherit; }
 .actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
 .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; align-items: center; margin-bottom: 8px; }
 select, input.answer { width: 100%; background: #222838; border: 1px solid var(--line); border-radius: 10px; padding: 10px; color: inherit; }
+input.count { width: 76px; background: #222838; border: 1px solid var(--line); border-radius: 10px; padding: 10px; color: inherit; text-align: center; }
 .chips { display: flex; flex-wrap: wrap; gap: 8px; }
 .picked { display: flex; flex-direction: column; gap: 6px; margin: 10px 0; min-height: 8px; }
 .picked .chip { background: #2a2414; border-color: #6a5a28; }
